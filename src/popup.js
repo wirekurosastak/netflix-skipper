@@ -1,6 +1,7 @@
 let skipIntroCheckbox = document.getElementById("skip-intro");
 let skipRecapCheckbox = document.getElementById("skip-recap");
 let skipNextCheckbox = document.getElementById("skip-next");
+let skipStillWatchingCheckbox = document.getElementById("skip-still-watching");
 let noSkipFirstCheckbox = document.getElementById("no-skip-first");
 let toggleExemptButton = document.getElementById("toggle-exempt");
 let currentTitleSpan = document.getElementById("current-title");
@@ -22,6 +23,10 @@ skipRecapCheckbox.addEventListener("click", async () => {
 
 skipNextCheckbox.addEventListener("click", async () => {
   chrome.storage.local.set({ skipNext: skipNextCheckbox.checked });
+});
+
+skipStillWatchingCheckbox.addEventListener("click", async () => {
+  chrome.storage.local.set({ skipStillWatching: skipStillWatchingCheckbox.checked });
 });
 
 noSkipFirstCheckbox.addEventListener("click", async () => {
@@ -192,8 +197,8 @@ async function getCurrentTitle() {
 async function initializePopup() {
   // Load general settings
   chrome.storage.local.get(
-    ["skipIntro", "skipRecap", "skipNext", "noSkipFirst"],
-    ({ skipIntro, skipRecap, skipNext, noSkipFirst }) => {
+    ["skipIntro", "skipRecap", "skipNext", "skipStillWatching", "noSkipFirst"],
+    ({ skipIntro, skipRecap, skipNext, skipStillWatching, noSkipFirst }) => {
       if (skipIntro) {
         skipIntroCheckbox.checked = true;
       }
@@ -202,6 +207,9 @@ async function initializePopup() {
       }
       if (skipNext) {
         skipNextCheckbox.checked = true;
+      }
+      if (skipStillWatching !== false) {
+        skipStillWatchingCheckbox.checked = true;
       }
       if (noSkipFirst) {
         noSkipFirstCheckbox.checked = true;

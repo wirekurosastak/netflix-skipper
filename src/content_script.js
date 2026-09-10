@@ -6,6 +6,15 @@ const CREDITS_UIA = "watch-credits-seamless-button";
 
 const BUTTONS = [INTRO_UIA, RECAP_UIA, NEXT_UIA, NEXT_DRAIN_UIA, CREDITS_UIA];
 
+// Selectors for the Netflix "Are you still watching?" inactivity prompt
+const STILL_WATCHING_SELECTORS = [
+  "[data-uia='interrupt-autoplay-continue']",
+  "[data-uia='continue-watching']",
+  "[data-uia='player-autoplay-interrupter-continue']",
+  ".interrupter-actions button",
+  "button.watch-video--continue-button",
+];
+
 // Function to extract the current Netflix title
 function getCurrentTitle() {
   // Use the specific selector that works reliably
@@ -60,13 +69,37 @@ async function isCurrentFirstEpisode() {
 
 async function skipper() {
   try {
-    const { skipIntro, skipRecap, skipNext, noSkipFirst, exemptTitles = [] } =
-      await new Promise((resolve) => {
-        chrome.storage.local.get(
-          ["skipIntro", "skipRecap", "skipNext", "noSkipFirst", "exemptTitles"],
-          resolve
-        );
-      });
+    const {
+      skipIntro,
+      skipRecap,
+      skipNext,
+      noSkipFirst,
+      skipStillWatching = true,
+      exemptTitles = [],
+    } = await new Promise((resolve) => {
+      chrome.storage.local.get(
+        [
+          "skipIntro",
+          "skipRecap",
+          "skipNext",
+          "noSkipFirst",
+          "skipStillWatching",
+          "exemptTitles",
+        ],
+        resolve
+      );
+    });
+
+    // Dismiss "Are you still watching?" prompt if enabled
+    if (skipStillWatching) {
+      for (const selector of STILL_WATCHING_SELECTORS) {
+        const stillWatchingBtn = document.querySelector(selector);
+        if (stillWatchingBtn) {
+          stillWatchingBtn.click();
+          break;
+        }
+      }
+    }
 
     // Check if current title is in exempt list
     const currentTitle = getCurrentTitle();

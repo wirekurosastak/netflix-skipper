@@ -1,5 +1,5 @@
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.set({ skipIntro: true, skipRecap: true, skipNext: true });
+  chrome.storage.local.set({ skipIntro: true, skipRecap: true, skipNext: true, skipStillWatching: true });
 });
 
 if (chrome.runtime) {
