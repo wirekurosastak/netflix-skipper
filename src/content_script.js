@@ -15,83 +15,95 @@ const STILL_WATCHING_SELECTORS = [
   "button.watch-video--continue-button",
 ];
 
+// Helper to check if extension context is still active (handles reload in developer mode)
+function isExtensionValid() {
+  return typeof chrome !== "undefined" && !!chrome.runtime && !!chrome.runtime.id;
+}
+
+// In-memory settings cache (avoids repeated asynchronous storage queries)
+let settings = {
+  skipIntro: true,
+  skipRecap: true,
+  skipNext: true,
+  noSkipFirst: false,
+  skipStillWatching: true,
+  exemptTitles: [],
+};
+
+// Initialize settings from storage
+if (isExtensionValid()) {
+  chrome.storage.local.get(
+    ["skipIntro", "skipRecap", "skipNext", "noSkipFirst", "skipStillWatching", "exemptTitles"],
+    (result) => {
+      if (chrome.runtime?.lastError) return;
+      if (result) {
+        settings = { ...settings, ...result };
+      }
+    }
+  );
+
+  // Reactively keep settings in sync when changed via popup
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === "local") {
+      for (const key of Object.keys(changes)) {
+        if (key in settings) {
+          settings[key] = changes[key].newValue;
+        }
+      }
+    }
+  });
+}
+
 // Function to extract the current Netflix title
 function getCurrentTitle() {
-  // Use the specific selector that works reliably
-  const titleElement = document.querySelectorAll("[data-uia='video-title']")[0];
+  const titleElement = document.querySelector("[data-uia='video-title']");
 
   if (titleElement) {
-    // Try to get the show title from the h4 element within the title element
-    const h4Element = titleElement.querySelector('h4');
+    const h4Element = titleElement.querySelector("h4");
     if (h4Element && h4Element.textContent.trim()) {
       return h4Element.textContent.trim();
     }
-    
-    // Fallback to full text content if no h4 found
+
     if (titleElement.textContent.trim()) {
       return titleElement.textContent.trim();
     }
   }
-  
-  // Fallback: try to get title from page title if the main selector fails
+
   const pageTitle = document.title;
-  if (pageTitle && pageTitle !== 'Netflix' && !pageTitle.includes('Watch ')) {
-    return pageTitle.replace(' - Netflix', '').trim();
+  if (pageTitle && pageTitle !== "Netflix" && !pageTitle.includes("Watch ")) {
+    return pageTitle.replace(" - Netflix", "").trim();
   }
-  
+
   return null;
 }
 
-// Function that checks if the episode is first
-async function isCurrentFirstEpisode() {
-  //If chrome.storage.local has isFirstEpisode, return it to avoid unnecessary DOM queries
-  //Else, check the DOM and set the value in storage for future reference
-  let isFirstEpisode = false;
-  const result = await new Promise((resolve) => {
-    chrome.storage.local.get(["isFirstEpisode"], resolve);
-  });
-
-  if (result.isFirstEpisode !== undefined) {
-    isFirstEpisode = result.isFirstEpisode;
-  }
-
-  const titleElement = document.querySelectorAll("[data-uia='video-title']")[0];
-
+// Function that checks if the episode is the first one
+function isCurrentFirstEpisode() {
+  const titleElement = document.querySelector("[data-uia='video-title']");
   if (titleElement) {
-    // Try to get the episode number from the span element within the title element
     const spanElement = titleElement.querySelector("span");
-    // If it's first episode, the element will be like E1.
-    isFirstEpisode = !!(spanElement && spanElement.textContent.trim().startsWith("E1"));
-    chrome.storage.local.set({ isFirstEpisode });
+    if (spanElement && spanElement.textContent) {
+      const text = spanElement.textContent.trim();
+      return /(?:^|[\s:S])(?:E|Ep\.?|Episode|T\d+:E)?\s*1(?:\D|$)/i.test(text);
+    }
   }
-  return isFirstEpisode;
+  return false;
 }
 
-async function skipper() {
-  try {
-    const {
-      skipIntro,
-      skipRecap,
-      skipNext,
-      noSkipFirst,
-      skipStillWatching = true,
-      exemptTitles = [],
-    } = await new Promise((resolve) => {
-      chrome.storage.local.get(
-        [
-          "skipIntro",
-          "skipRecap",
-          "skipNext",
-          "noSkipFirst",
-          "skipStillWatching",
-          "exemptTitles",
-        ],
-        resolve
-      );
-    });
+let observer = null;
+let fallbackInterval = null;
 
-    // Dismiss "Are you still watching?" prompt if enabled
-    if (skipStillWatching) {
+function skipper() {
+  // Gracefully exit and clean up if extension was reloaded or updated
+  if (!isExtensionValid()) {
+    if (observer) observer.disconnect();
+    if (fallbackInterval) clearInterval(fallbackInterval);
+    return;
+  }
+
+  try {
+    // 1. Dismiss "Are you still watching?" prompt if enabled
+    if (settings.skipStillWatching) {
       for (const selector of STILL_WATCHING_SELECTORS) {
         const stillWatchingBtn = document.querySelector(selector);
         if (stillWatchingBtn) {
@@ -101,76 +113,123 @@ async function skipper() {
       }
     }
 
-    // Check if current title is in exempt list
+    // 2. Check if current title is in exempt list
     const currentTitle = getCurrentTitle();
-    const isExempt = currentTitle && exemptTitles.includes(currentTitle);
-
-    // If title is exempt, don't skip anything
+    const isExempt = currentTitle && settings.exemptTitles.includes(currentTitle);
     if (isExempt) {
       return;
     }
 
-    const isFirstEpisode = noSkipFirst ? await isCurrentFirstEpisode() : false;
+    // 3. Check first episode status
+    const isFirstEpisode = settings.noSkipFirst ? isCurrentFirstEpisode() : false;
 
+    // 4. Check and click skip buttons
     const mapper = {
-      [INTRO_UIA]: skipIntro && !isFirstEpisode,
-      [RECAP_UIA]: skipRecap,
-      [NEXT_UIA]: skipNext && !isFirstEpisode,
-      [NEXT_DRAIN_UIA]: skipNext && !isFirstEpisode,
-      [CREDITS_UIA]: !skipNext || isFirstEpisode,
+      [INTRO_UIA]: settings.skipIntro && !isFirstEpisode,
+      [RECAP_UIA]: settings.skipRecap,
+      [NEXT_UIA]: settings.skipNext && !isFirstEpisode,
+      [NEXT_DRAIN_UIA]: settings.skipNext && !isFirstEpisode,
+      [CREDITS_UIA]: !settings.skipNext || isFirstEpisode,
     };
-    BUTTONS.forEach((uia) => {
-      const button = Object.values(
-        document.getElementsByTagName("button")
-      ).find((elem) => elem.getAttribute("data-uia") === uia);
-      if (button && mapper[uia]) {
-        button.click();
+
+    for (const uia of BUTTONS) {
+      if (mapper[uia]) {
+        const button = document.querySelector(`button[data-uia="${uia}"]`);
+        if (button) {
+          button.click();
+        }
       }
-    });
+    }
   } catch (err) {
-    console.error(err);
+    if (err?.message?.includes("Extension context invalidated")) {
+      return;
+    }
+    console.error("Netflix Skipper error:", err);
   }
 }
 
 // Function to add/remove current title from exempt list
 async function toggleExemptStatus() {
+  if (!isExtensionValid()) return;
   const currentTitle = getCurrentTitle();
   if (!currentTitle) {
-    console.log('Netflix Skipper: Could not detect current title');
+    console.log("Netflix Skipper: Could not detect current title");
     return;
   }
-  
+
   try {
-    const result = await chrome.storage.local.get(['exemptTitles']);
+    const result = await chrome.storage.local.get(["exemptTitles"]);
     const exemptTitles = result.exemptTitles || [];
-    
+
+    let updatedTitles;
     if (exemptTitles.includes(currentTitle)) {
-      // Remove from exempt list
-      const updatedTitles = exemptTitles.filter(title => title !== currentTitle);
-      await chrome.storage.local.set({ exemptTitles: updatedTitles });
+      updatedTitles = exemptTitles.filter((title) => title !== currentTitle);
       console.log(`Netflix Skipper: Removed "${currentTitle}" from exempt list`);
     } else {
-      // Add to exempt list
-      const updatedTitles = [...exemptTitles, currentTitle];
-      await chrome.storage.local.set({ exemptTitles: updatedTitles });
+      updatedTitles = [...exemptTitles, currentTitle];
       console.log(`Netflix Skipper: Added "${currentTitle}" to exempt list`);
     }
+
+    settings.exemptTitles = updatedTitles;
+    await chrome.storage.local.set({ exemptTitles: updatedTitles });
   } catch (err) {
-    console.error('Netflix Skipper: Error toggling exempt status:', err);
+    if (err?.message?.includes("Extension context invalidated")) return;
+    console.error("Netflix Skipper: Error toggling exempt status:", err);
   }
 }
 
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'toggleExempt') {
+  if (!isExtensionValid()) return;
+  if (request.action === "toggleExempt") {
     toggleExemptStatus();
     sendResponse({ success: true });
-  } else if (request.action === 'getCurrentTitle') {
+  } else if (request.action === "getCurrentTitle") {
     const title = getCurrentTitle();
     sendResponse({ title });
   }
 });
 
+// Setup MutationObserver and fallback runner on Netflix pages
 if (document.location.host.includes(".netflix.")) {
-  setInterval(() => skipper(), 500);
+  let isScheduled = false;
+
+  // Debounced runner using requestAnimationFrame for 0ms visual delay and 0% idle CPU
+  const scheduleSkipper = () => {
+    if (!isExtensionValid()) {
+      if (observer) observer.disconnect();
+      if (fallbackInterval) clearInterval(fallbackInterval);
+      return;
+    }
+    if (!isScheduled) {
+      isScheduled = true;
+      requestAnimationFrame(() => {
+        skipper();
+        isScheduled = false;
+      });
+    }
+  };
+
+  observer = new MutationObserver(() => {
+    scheduleSkipper();
+  });
+
+  const startObserver = () => {
+    const target = document.body || document.documentElement;
+    if (target) {
+      observer.observe(target, { childList: true, subtree: true });
+      scheduleSkipper();
+    } else {
+      setTimeout(startObserver, 100);
+    }
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", startObserver);
+  } else {
+    startObserver();
+  }
+
+  // Low-frequency safety fallback (every 2.5s) to guarantee check during silent state changes
+  fallbackInterval = setInterval(() => skipper(), 2500);
 }
